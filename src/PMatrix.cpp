@@ -84,8 +84,8 @@ ParallelMatrix<std::complex<double>> ParallelMatrix<std::complex<double>>::prod(
   } else {
     assert(k == that.numCols_);
   }
-  std::complex<double> alpha = complexOne;
-  std::complex<double> beta = complexZero;
+  std::complex<double> alpha = {1., 0.};
+  std::complex<double> beta = {0., 0.};
   int one = 1;
   pzgemm_(&trans1, &trans2, &m, &n, &k, &alpha, mat, &one, &one, &descMat_[0],
           that.mat, &one, &one, &that.descMat_[0], &beta, result.mat, &one,
@@ -150,40 +150,18 @@ ParallelMatrix<double>::elpaDiagonalize() {
   elpa_set(handle, "solver", ELPA_SOLVER_2STAGE, &error);
   elpa_set(handle, "real_kernel", ELPA_2STAGE_COMPLEX_AVX512_BLOCK2, &error);
 
-  if(mpi->mpiHead()) {
+/*   if(mpi->mpiHead()) {
      std::cout << "Starting matrix diagonalization using ELPA." << std::endl;
      mpi->time();
-  }
-
-  Kokkos::Profiling::pushRegion("elpa diag");
-
+  } */
+  
   // do the diagonalization
   elpa_eigenvectors(handle, mat, eigenvalues, eigenvectors.mat, &error);
 
-  Kokkos::Profiling::popRegion();
-
-  if(mpi->mpiHead()) {
+/*   if(mpi->mpiHead()) {
      std::cout << "Matrix diagonalization completed." << std::endl;
      mpi->time();
-  }
-
-  if( eigenvalues[0] < 0 ) { // negative modes were found
-    if(mpi->mpiHead()) {
-      Warning("Relaxons diagonalization found negative eigenvalues."
-                "\n\tThis can happen when there's a bit of numerical noise on the scattering matrix,"
-                "\n\tand finding them may indicate the calculation is unconverged."
-                "\n\tWhile we simply do not include these when computing transport, "
-                "\n\tand likely if they are small the calculation will be unaffected, "
-                "\n\tyou may want to consider using with more wavevectors or an improved DFT calculation."
-                "\n\tAdditionally, setting symmetrizeMatrix = true in your input file will help.");
-      std::cout << "These eigenvalues are (in atomic units):" << std::endl;
-      for (int i = 0; eigenvalues[i] <= 0; i++) {
-        std::cout << i << " " << eigenvalues[i] << std::endl;
-        if(i+1 == numRows_) break; // avoid out of bounds
-      }
-      std::cout << std::endl;
-    }
-  }
+  } */
 
   //deallocate
   elpa_deallocate(handle, &error);
@@ -258,24 +236,20 @@ ParallelMatrix<double>::scalapackDiagonalize() {
     Error("PDSYEVD lwork array allocation failed.");
   }
 
-  if(mpi->mpiHead()) {
+/*   if(mpi->mpiHead()) {
      std::cout << "Starting matrix diagonalization." << std::endl;
      mpi->time();
   }
-
-  Kokkos::Profiling::pushRegion("pdsyevd");
-
+ */
   // call the function to now diagonalize
   pdsyevd_(&jobz, &uplo, &numRows_, mat, &ia, &ja, &descMat_[0], eigenvalues,
           eigenvectors.mat, &ia, &ja, &eigenvectors.descMat_[0],
           work, &lwork, iwork, &liwork, &info);
 
-  Kokkos::Profiling::popRegion();
-
-  if(mpi->mpiHead()) {
+/*   if(mpi->mpiHead()) {
      std::cout << "Matrix diagonalization completed." << std::endl;
      mpi->time();
-  }
+  } */
 
   if(info != 0) {
     if (mpi->mpiHead()) {
@@ -285,22 +259,6 @@ ParallelMatrix<double>::scalapackDiagonalize() {
     Error("PDSYEVD failed.", info);
   }
 
-  if( eigenvalues[0] < 0 ) { // negative modes were found
-    if(mpi->mpiHead()) {
-      Warning("Relaxons diagonalization found negative eigenvalues."
-                "\n\tThis can happen when there's a bit of numerical noise on the scattering matrix,"
-                "\n\tand finding them may indicate the calculation is unconverged."
-                "\n\tWhile we simply do not include these when computing transport, "
-                "\n\tyou may want to consider using with more wavevectors or an improved DFT calculation."
-                "\n\tAdditionally, setting symmetrizeMatrix = true in your input file will help.");
-      std::cout << "These eigenvalues are (in atomic units):" << std::endl;
-      for (int i = 0; eigenvalues[i] <= 0; i++) {
-        std::cout << i << " " << eigenvalues[i] << std::endl;
-        if(i+1 == numRows_) break; // avoid out of bounds
-      }
-      std::cout << std::endl;
-    }
-  }
   // copy things into output containers
   std::vector<double> eigenvalues_(numRows_);
   for (int i = 0; i < numRows_; i++) {
@@ -437,15 +395,10 @@ std::tuple<std::vector<double>, ParallelMatrix<double>>
   allocate(work, 1);
   allocate(iwork, 1);
 
-
-  Kokkos::Profiling::pushRegion("pdsyevr");
-
   pdsyevr_(&jobz, &range, &uplo,  &numRows_, mat, &ia, &ja, &descMat_[0],
         &vl, &vu, &il, &iu, &m, &nz, eigenvalues,
         eigenvectors.mat, &iz, &jz, &eigenvectors.descMat_[0],
         work, &lwork, iwork, &liwork, &info);
-
-  Kokkos::Profiling::popRegion();
 
   lwork=int(work[0]);
   delete[] work;
@@ -458,44 +411,6 @@ std::tuple<std::vector<double>, ParallelMatrix<double>>
   int nnp = std::max(std::max(numRows_, numBlasRows_*numBlasCols_ + 1), 4);
   liwork = 12*nnp + 2*numRows_;
   allocate(iwork, liwork);
-
-  // first, call and report any negative eigenvalues ------------------------------
-  // we want to note these for convergence reasons
-  if(checkNegativeEigenvalues) {
-
-    if(mpi->mpiHead()) mpi->time();
-    if(mpi->mpiHead())
-      std::cout << "Checking scattering matrix for negative eigenvalues." << std::endl;
-
-    eigenvectors = *this; // use the space of this matrix first to
-                // placehold the actual matrix, as it's changed by pdsyevr
-    range = 'V';
-    jobz = 'N';
-    vl = -1.;
-    vu = 1e-16;
-    pdsyevr_(&jobz, &range, &uplo,  &numRows_, eigenvectors.mat, &ia, &ja, &descMat_[0],
-          &vl, &vu, &il, &iu, &m, &nz, eigenvalues,
-          eigenvectors.mat, &iz, &jz, &descMat_[0],
-          work, &lwork, iwork, &liwork, &info);
-
-    if( m > 3 ) { // more than just the zero eigenmode was found
-      if(mpi->mpiHead()) {
-        Warning("Relaxons diagonalization found " + std::to_string(m) +
-               " in the range -1 < eigenvalues <= 0."
-                  "\n\tThis can happen when there's a bit of numerical noise on the scattering matrix,"
-                  "\n\tand finding them may indicate the calculation is unconverged."
-                  "\n\tWhile we simply do not include these when computing transport, "
-                  "\n\tyou may want to consider using with more wavevectors or an improved DFT calculation."
-                  "\n\tAdditionally, setting symmetrizeMatrix = true in your input file will help.");
-        std::cout << "These eigenvalues are (in atomic units):" << std::endl;
-
-        for (int i = 0; i < m; i++) {
-          std::cout << i << " " << eigenvalues[i] << std::endl;
-        }
-        std::cout << std::endl;
-      }
-    }
-  }
 
   // now we perform the regular call to get the largest ones ---------------------
   if(mpi->mpiHead()) mpi->time();

@@ -123,7 +123,7 @@ class ParallelMatrix {
   /** Find the global indices of the matrix elements that are stored locally
    * by the current MPI process.
    */
-  std::vector<std::tuple<int, int>> getAllLocalStates();
+  std::vector<std::tuple<int, int>> getAllLocalElements();
 
   /** Find the global indices of the rows that are stored locally
    * by the current MPI process.
@@ -606,7 +606,7 @@ int ParallelMatrix<T>::global2Local(const int& row, const int& col) const {
 }
 
 template <typename T>
-std::vector<std::tuple<int, int>> ParallelMatrix<T>::getAllLocalStates() {
+std::vector<std::tuple<int, int>> ParallelMatrix<T>::getAllLocalElements() {
   std::vector<std::tuple<int, int>> x;
   for (size_t k = 0; k < numLocalElements_; k++) {
     std::tuple<int, int> t = local2Global(k);  // bloch indices
@@ -813,7 +813,7 @@ void ParallelMatrix<T>::enforcePositiveSemiDefinite() {
   // the scattering matrix is already stored in the linewidths vector
   std::vector<T> invSqrtDiagonal(numRows_); 
   std::vector<T> diagonal(numRows_); 
-  for(auto matEl : getAllLocalStates()) {
+  for(auto matEl : getAllLocalElements()) {
 
     // get matrix row and col indices
     size_t iMat1 = std::get<0>(matEl);
@@ -832,7 +832,7 @@ void ParallelMatrix<T>::enforcePositiveSemiDefinite() {
 
   // we construct G by performing D^-1/2 * C * D^-1/2 (where D are matrices)
   // with the diagonal elements set to sqrt(diagonal) of this matrix
-  for(auto matEl : getAllLocalStates()) {
+  for(auto matEl : getAllLocalElements()) {
 
     // get matrix row and col indices
     size_t iMat1 = std::get<0>(matEl);
@@ -857,7 +857,7 @@ void ParallelMatrix<T>::enforcePositiveSemiDefinite() {
   lowestEigenvalue = abs(lowestEigenvalue); // unsure if this would work on a complex matrix 
 
   // finally use this result to correct the real matrix 
-  for(auto matEl : getAllLocalStates()) {
+  for(auto matEl : getAllLocalElements()) {
 
     // get matrix row and col indices
     size_t iMat1 = std::get<0>(matEl);

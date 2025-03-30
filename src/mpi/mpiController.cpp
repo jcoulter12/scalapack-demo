@@ -251,7 +251,7 @@ int MPIcontroller::getSize(const int& communicator) const {
 };
   
 #ifdef MPI_AVAIL
-  MPI_Comm MPIcontroller::getComm(const int& communicator=worldComm) const {
+  MPI_Comm MPIcontroller::getComm(const int& communicator) const {
     if (communicator == worldComm) {
       return worldCommunicator;
     } else if (communicator == intraPoolComm) {

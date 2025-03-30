@@ -10,6 +10,8 @@
 #include <complex>
 #include <vector>
 #include <tuple>
+#include <iostream>
+#include <string>
 
 #ifdef MPI_AVAIL
 #include <mpi.h>
@@ -18,6 +20,7 @@
 const int worldComm_ = 0;
 const int intraPoolComm_ = 1;
 const int interPoolComm_ = 2;
+
 
 /* NOTE: When using this object make sure to use the divideWork
 functions to set up the initial division of tasks --
@@ -655,8 +658,14 @@ void MPIcontroller::gatherv(T* dataIn, V* dataOut) const {
 
   if(!containerType<V>::allowsAutoWorkDivs() ||
                 !containerType<T>::allowsAutoWorkDivs() ) {
-    Error("Developer error: Cannot call gatherv on the given type "
-        "without also specifying more info about work division.");
+   
+    if (mpiHead()) {
+      std::cout << "Developer error: Cannot call gatherv on the given type "
+        "without also specifying more info about work division." << std::endl; 
+    }
+    barrier();
+    finalize();
+    exit(1); 
   }
 
   // calculate the number of elements coming from each process
@@ -709,8 +718,13 @@ void MPIcontroller::allGatherv(T* dataIn, V* dataOut) const {
   int errCode;
 
   if(!containerType<V>::allowsAutoWorkDivs() || !containerType<T>::allowsAutoWorkDivs()) {
-    Error("Developer error: Cannot call allGatherv on the given type "
-        "without also specifying more info about work division.");
+    if (mpiHead()) {
+      std::cout << "Developer error: Cannot call allGatherv on the given type "
+        "without also specifying more info about work division." << std::endl; 
+    }
+    barrier();
+    finalize();
+    exit(1); 
   }
 
   // construct the work divs 
@@ -862,13 +876,13 @@ void MPIcontroller::bigAllGatherV(T* dataIn, T* dataOut,
       if (errCode != MPI_SUCCESS) errorReport(errCode);
       return;
     }
-    else if(version < 3) { // this will have problems in mpi version <3
-      std::cout << "You're running Phoebe with MPI version < 3.\n" <<
-          "For this very large calculation, you manage to overflow some \n" <<
-          "of MPI calls. Either you can rebuild with version 3 or 4, or \n" <<
-          "you can use MPI pools (see Phoebe docs) to reduce the elph \n" <<
-          "matrix elements which need to be stored on each node." << std::endl;
-      Error e("Calculation overflows MPI, run with MPI version <3.");
+    else if(version < 3) { // this will have problems in mpi version <3   
+      if (mpiHead()) {
+        std::cout << "Calculation overflows MPI, run with MPI version <3." << std::endl; 
+      }
+      barrier();
+      finalize();
+      exit(1); 
     }
 
     int errCodeSend, errCodeRecv;

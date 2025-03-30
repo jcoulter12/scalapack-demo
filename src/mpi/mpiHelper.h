@@ -14,4 +14,3 @@ void deleteMPI();
 
 // Prints info about omp num threads and mpi processes
 void parallelInfo(); 
-

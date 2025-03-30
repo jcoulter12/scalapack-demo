@@ -12,7 +12,8 @@ project(PMatrix VERSION 1.0 LANGUAGES CXX)
 # these can be toggled in a build script by
 # supplying arguments to cmake like cmake -DMPI_AVAIL=OFF ../
 option(MPI_AVAIL "Build with MPI wrappers" ON)
-option(OMP_AVAIL "Build with OMP" ON)
+option(OMP_AVAIL "Build with OMP" OFF)
+add_definitions("-DMPI_AVAIL") 
 
 ############### SOURCE ###############
 
