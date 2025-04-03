@@ -55,7 +55,7 @@ ParallelMatrix<std::complex<double>> ParallelMatrix<std::complex<double>>::prod(
     const ParallelMatrix<std::complex<double>>& that, const char& trans1,
     const char& trans2) {
 
-  ParallelMatrix<std::complex<double>> result(numRows_, numCols_, 0, 0,
+  ParallelMatrix<std::complex<double>> result(numRows_, numCols_,
                                               numBlocksRows_, numBlocksCols_);
   if(cols() != that.rows()) {
     Error("Cannot multiply matrices for which lhs.cols != rhs.rows.");
@@ -93,102 +93,14 @@ ParallelMatrix<std::complex<double>> ParallelMatrix<std::complex<double>>::prod(
   return result;
 }
 
-
 template <>
 std::tuple<std::vector<double>, ParallelMatrix<double>>
-ParallelMatrix<double>::elpaDiagonalize() {
-
-  // allocate space for eigenvalues
-  double *eigenvalues;
-  allocate(eigenvalues, numRows_);
-
-  // Make a new PMatrix to receive the output
-  // zeros here trigger a the default blacs process grid (a square one)
-  ParallelMatrix<double> eigenvectors(numRows_, numCols_, 0, 0,
-                              numBlocksRows_, numBlocksCols_, blacsContext_);
-
-  #ifdef ELPA_AVAIL
+ParallelMatrix<double>::diagonalize() {
 
   if (numRows_ != numCols_) {
     Error("Cannot diagonalize non-square matrix");
   }
-  if ( numBlasRows_ != numBlasCols_ ) {
-    Error("Cannot diagonalize via scalapack with a non-square process grid!");
-  }
-  if (numBlocksRows_ != numBlocksCols_ ) {
-    Error("Cannot diagonalize via ELPA with nonsquare blocksize!");
-  }
-
-  // set up elpa
-  elpa_t handle = 0;
-  int error;
-  //bool elpaSuccess = true;
-  std::string elpaErrorStr = "";
-
-  //error = elpa_init(ELPA_API_VERSION);
-  //assert_elpa_ok(error, "ELPA API version not supported", elpaSuccess, elpaErrorStr);
-
-  //handle = elpa_allocate(&error);
-  //assert_elpa_ok(error, "ELPA instance allocation failed", elpaSuccess, elpaErrorStr);
-
-  // set parameters
-  elpa_set(handle, "na", numRows_, &error);
-  elpa_set(handle, "nev", numRows_, &error);
-  elpa_set(handle, "local_nrows", numLocalRows_, &error);
-  elpa_set(handle, "local_ncols", numLocalCols_, &error);
-  elpa_set(handle, "nblk", numBlocksRows_, &error);
-  // here we should always use the main commworld
-  elpa_set(handle, "mpi_comm_parent", MPI_Comm_c2f(MPI_COMM_WORLD), &error);
-  elpa_set(handle, "process_row", myBlasRow_, &error);
-  elpa_set(handle, "process_col", myBlasCol_, &error);
-
-  //assert_elpa_ok(error, "ELPA matrix initialization failed", elpaSuccess, elpaErrorStr);
-  //error = elpa_setup(handle);
-  //assert_elpa_ok(error, "ELPA setup failed", elpaSuccess, elpaErrorStr);
-
-  // set tunable run-time options
-  elpa_set(handle, "solver", ELPA_SOLVER_2STAGE, &error);
-  elpa_set(handle, "real_kernel", ELPA_2STAGE_COMPLEX_AVX512_BLOCK2, &error);
-
-/*   if(mpi->mpiHead()) {
-     std::cout << "Starting matrix diagonalization using ELPA." << std::endl;
-     mpi->time();
-  } */
-  
-  // do the diagonalization
-  elpa_eigenvectors(handle, mat, eigenvalues, eigenvectors.mat, &error);
-
-/*   if(mpi->mpiHead()) {
-     std::cout << "Matrix diagonalization completed." << std::endl;
-     mpi->time();
-  } */
-
-  //deallocate
-  elpa_deallocate(handle, &error);
-  elpa_uninit(&error);
-
-  #endif
-
-  // copy things into output containers
-  std::vector<double> eigenvalues_(numRows_);
-  for (int i = 0; i < numRows_; i++) {
-    eigenvalues_[i] = *(eigenvalues + i);
-  }
-  delete[] eigenvalues;
-
-  // note that the scattering matrix now has different values
-  return std::make_tuple(eigenvalues_, eigenvectors);
-
-}
-
-template <>
-std::tuple<std::vector<double>, ParallelMatrix<double>>
-ParallelMatrix<double>::scalapackDiagonalize() {
-
-  if (numRows_ != numCols_) {
-    Error("Cannot diagonalize non-square matrix");
-  }
-  if ( numBlasRows_ != numBlasCols_ ) {
+  if ( numBlacsRows_ != numBlacsCols_ ) {
     Error("Cannot diagonalize via scalapack with a non-square process grid!");
   }
 
@@ -197,7 +109,7 @@ ParallelMatrix<double>::scalapackDiagonalize() {
 
   // Make a new PMatrix to receive the output
   // zeros here trigger a the default blacs process grid (a square one)
-  ParallelMatrix<double> eigenvectors(numRows_,numCols_, 0, 0,
+  ParallelMatrix<double> eigenvectors(numRows_,numCols_,
                               numBlocksRows_,numBlocksCols_, blacsContext_);
 
   char jobz = 'V';  // also eigenvectors
@@ -215,7 +127,7 @@ ParallelMatrix<double>::scalapackDiagonalize() {
   allocate(work, 1);
   // somehow autodetermination never works for liwork, so we compute this manually
   // liwork ≥ 7n + 8npcol + 2
-  int liwork = 7*numRows_ + 8* numBlasCols_ + 2;
+  int liwork = 7*numRows_ + 8* numBlacsCols_ + 2;
   int *iwork;
   allocate(iwork, liwork);
   // calculate lwork
@@ -271,25 +183,13 @@ ParallelMatrix<double>::scalapackDiagonalize() {
 }
 
 template <>
-std::tuple<std::vector<double>, ParallelMatrix<double>>
-ParallelMatrix<double>::diagonalize() {
-
-  #ifdef ELPA_AVAIL
-    return elpaDiagonalize();
-  #else
-    return scalapackDiagonalize();
-  #endif
-
-}
-
-template <>
 std::tuple<std::vector<double>, ParallelMatrix<std::complex<double>>>
 ParallelMatrix<std::complex<double>>::diagonalize() {
 
   if (numRows_ != numCols_) {
     Error("Can not diagonalize non-square matrix");
   }
-  if ( numBlasRows_ != numBlasCols_ ) {
+  if ( numBlacsRows_ != numBlacsCols_ ) {
     Error("Cannot diagonalize via scalapack with a non-square process grid!");
   }
   double* eigenvalues = nullptr;
@@ -297,14 +197,14 @@ ParallelMatrix<std::complex<double>>::diagonalize() {
 
   // the two zeros here trigger the default square blacs process grid in initBlacs
   ParallelMatrix<std::complex<double>> eigenvectors(
-      numRows_, numCols_, 0, 0, numBlocksRows_, numBlocksCols_);
+      numRows_, numCols_, numBlocksRows_, numBlocksCols_);
 
   // find the value of lwork and lrwork. These are internal "scratch" arrays
   int NB = descMat_[5];
   int aZero = 0;
   int NN = std::max(std::max(numRows_, NB), 2);
-  int NP0 = numroc_(&NN, &NB, &aZero, &aZero, &numBlasRows_);
-  int NQ0 = numroc_(&NN, &NB, &aZero, &aZero, &numBlasCols_);
+  int NP0 = numroc_(&NN, &NB, &aZero, &aZero, &numBlacsRows_);
+  int NQ0 = numroc_(&NN, &NB, &aZero, &aZero, &numBlacsCols_);
   int lwork = (NP0 + NQ0 + NB) * NB + 3 * numRows_ + numRows_ * numRows_;
   int lrwork = 2 * numRows_ + 2 * numRows_ - 2;
 
@@ -349,7 +249,7 @@ std::tuple<std::vector<double>, ParallelMatrix<double>>
   if (numRows_ != numCols_) {
     Error("Cannot diagonalize non-square matrix");
   }
-  if ( numBlasRows_ != numBlasCols_ ) {
+  if ( numBlacsRows_ != numBlacsCols_ ) {
     Error("Cannot diagonalize via scalapack with a non-square process grid!");
   }
   if ( numRows_ < numEigenvalues) {
@@ -366,7 +266,7 @@ std::tuple<std::vector<double>, ParallelMatrix<double>>
   // can get around this.
   // Make a new PMatrix to receive the output
   ParallelMatrix<double> eigenvectors(numRows_, numCols_,
-                        0, 0, numBlocksRows_,numBlocksCols_, blacsContext_);
+                        numBlocksRows_,numBlocksCols_, blacsContext_);
 
   char jobz = 'V';  // also eigenvectors
   char uplo = 'U';  // upper triangular
@@ -408,7 +308,7 @@ std::tuple<std::vector<double>, ParallelMatrix<double>>
   // for some reason scalapack won't fill liwork automatically:
   //Let nnp = max( n, nprow*npcol + 1, 4 ). Then:
   //liwork≥ 12*nnp + 2*n when the eigenvectors are desired
-  int nnp = std::max(std::max(numRows_, numBlasRows_*numBlasCols_ + 1), 4);
+  int nnp = std::max(std::max(numRows_, numBlacsRows_*numBlacsCols_ + 1), 4);
   liwork = 12*nnp + 2*numRows_;
   allocate(iwork, liwork);
 

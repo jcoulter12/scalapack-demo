@@ -14,16 +14,12 @@
 #include <set>
 
 // https://www.ibm.com/docs/en/pessl/5.5?topic=programs-application-program-outline
-// TODO we could remove the sq proc grid requirement as done here
 
 /** Class for managing a matrix MPI-distributed in memory.
  *
  * This class uses the Scalapack library for matrix-matrix multiplication and
  * matrix diagonalization. For the time being we don't use other scalapack
  * functionalities.
- *
- * If the code is compiled without MPI, ParallelMatrix reduces to its serial
- * version Matrix.
  *
  * Template specialization only valid for double or complex<double>.
  */
@@ -45,12 +41,12 @@ class ParallelMatrix {
   // blockSizeRows/Cols -- the size of each unit we divide nrows/ncols into
   int blockSizeRows_ = 0;
   int blockSizeCols_ = 0;
-  // numBlasRows/Cols - the number of rows/cols in the process grid
-  int numBlasRows_ = 0;
-  int numBlasCols_ = 0;
-  // myBlasRow/Col - this process's row/col in the process grid
-  int myBlasRow_ = 0;
-  int myBlasCol_ = 0;
+  // numBlacsRows/Cols - the number of rows/cols in the process grid
+  int numBlacsRows_ = 0;
+  int numBlacsCols_ = 0;
+  // myBlacsRow/Col - this process's row/col in the process grid
+  int myBlacsRow_ = 0;
+  int myBlacsCol_ = 0;
   int descMat_[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
   int blasRank_ = 0;
   int blacsContext_ = 0;
@@ -83,15 +79,14 @@ class ParallelMatrix {
   static const char transT = 'T';  // transpose
   static const char transC = 'C';  // adjoint (for complex numbers)
 
-  /** Default constructor of the matrix class.
+  /** Constructor of the matrix class.
    * Matrix elements are set to zero in the initialization.
    * @param numRows: global number of matrix rows
    * @param numCols: global number of matrix columns
-   * @param numBLocksRows: row size of the block for Blacs distribution
-   * @param numBLocksCols: column size of the block for Blacs distribution
+   * @param numBlacsRows: row size of the block for Blacs distribution
+   * @param numBlacsCols: column size of the block for Blacs distribution
    */
   ParallelMatrix(const int& numRows, const int& numCols,
-                 const int& numBlasRows = 0, const int& numBlasCols = 0,
                  const int& numBlocksRows = 0, const int& numBlocksCols = 0,
                  const int& blacsContext = -1);
 
@@ -112,12 +107,12 @@ class ParallelMatrix {
   ParallelMatrix& operator=(const ParallelMatrix<T>& that);
 
   /** A method to initialize blacs parameters, if needed.
-  * @param numBlasRows -- number of rows requested for blacs grid
-  * @param numBlasCols -- number of cosl requested for blacs grid
+  * @param numBlacsRows -- number of rows requested for blacs grid
+  * @param numBlacsCols -- number of cosl requested for blacs grid
   * If both are zero, this function falls back to create a square
   * blacs process grid.
   */
-  void initBlacs(const int& numBlasRows = 0, const int& numBlasCols = 0,
+  void initBlacs(const int& numBlacsRows = 0, const int& numBlacsCols = 0,
                                                 const int& initBlacsContext = -1);
 
   /** Find the global indices of the matrix elements that are stored locally
@@ -216,21 +211,6 @@ class ParallelMatrix {
   std::tuple<std::vector<double>, ParallelMatrix<T>> diagonalize(int numEigenvalues,
                                                 bool checkNegativeEigenvalues = true);
 
-  /** Write contents of the matrix to file. Note, this is for testing because
-   * it's very slow and in a production case could make an unreasonably large file.
-   * @param outFileName: string naming the output file
-   * @param dataSetName: keyname for data in the output file
-   */
-  void outputToHDF5(const std::string &outFileName,
-                                   const std::string &dataSetName);
-
-  /** Functions which actually diagonalize the matrix, which one is
-   * called is determined by the main diagonalize call, and if ELPA_AVAIL
-   * is defined.
-   */
-  std::tuple<std::vector<double>, ParallelMatrix<T>> elpaDiagonalize();
-  std::tuple<std::vector<double>, ParallelMatrix<T>> scalapackDiagonalize();
-
   /** Computes the squared Frobenius norm of the matrix
    * (or Euclidean norm, or L2 norm of the matrix)
    */
@@ -255,26 +235,20 @@ class ParallelMatrix {
   */
   void symmetrize();
 
-  /** A function to fix up a matrix with a bit of noise to be positive semi-definite
-  */
-  void enforcePositiveSemiDefinite();
-
 };
 
 template <typename T>
 ParallelMatrix<T>::ParallelMatrix(const int& numRows, const int& numCols,
-                                  const int& numBlasRows,
-                                  const int& numBlasCols,
                                   const int& numBlocksRows,
                                   const int& numBlocksCols,
                                   const int& blacsContext) {
 
   // call initBlacs to set all blacs related variables and contruct
   // the blacs context and process grid setup.
-  // If numBlocksRows or numBlocksCols is not zero, this will
+  // If numBlacsRows and numBlacsCols are zero, this will
   // initialize blacs with a square process grid
   // (and number of processors must be a square number if we're doing lin alg ops)
-  initBlacs(numBlasRows, numBlasCols, blacsContext);
+  initBlacs(0, 0, blacsContext);
 
   // initialize number of rows and columns of the global matrix
   numRows_ = numRows;
@@ -287,9 +261,9 @@ ParallelMatrix<T>::ParallelMatrix(const int& numRows, const int& numCols,
   //
   // If block size values are not supplied, the default is to make the
   // block sizes the same as the blacs grid divisions
-  if(numBlocksRows == 0) { numBlocksRows_ = numBlasRows_; }
+  if(numBlocksRows == 0) { numBlocksRows_ = numBlacsRows_; }
   else { numBlocksRows_ = numBlocksRows; }
-  if(numBlocksCols == 0) { numBlocksCols_ = numBlasCols_; }
+  if(numBlocksCols == 0) { numBlocksCols_ = numBlacsCols_; }
   else { numBlocksCols_ = numBlocksCols; }
 
   // compute the block size (chunks of rows/cols over which matrix is distributed)
@@ -304,14 +278,14 @@ ParallelMatrix<T>::ParallelMatrix(const int& numRows, const int& numCols,
 
   // numroc function takes information about the process grid and returns the number of
   // rows and cols which are local to this process
-  numLocalRows_ = numroc_(&numRows_, &blockSizeRows_, &myBlasRow_, &iZero, &numBlasRows_);
-  numLocalCols_ = numroc_(&numCols_, &blockSizeCols_, &myBlasCol_, &iZero, &numBlasCols_);
+  numLocalRows_ = numroc_(&numRows_, &blockSizeRows_, &myBlacsRow_, &iZero, &numBlacsRows_);
+  numLocalCols_ = numroc_(&numCols_, &blockSizeCols_, &myBlacsCol_, &iZero, &numBlacsCols_);
   numLocalElements_ = numLocalRows_ * numLocalCols_;
 
-  //if(numLocalElements_ < 0) { // probably overflowed
-  //  Error("The number of matrix elements local to this process overflows int\n"
-  //		    "increase the number of MPI processes.");
-  //} 
+  if(numLocalElements_ < 0) { // probably overflowed
+    Error("The number of matrix elements local to this process overflows int\n"
+  		    "increase the number of MPI processes.");
+  }
 
   // allocate the matrix
   mat = new T[numLocalElements_];
@@ -351,10 +325,10 @@ ParallelMatrix<T>::ParallelMatrix(const ParallelMatrix<T>& that) {
   numBlocksCols_ = that.numBlocksCols_;
   blockSizeRows_ = that.blockSizeRows_;
   blockSizeCols_ = that.blockSizeCols_;
-  numBlasRows_ = that.numBlasRows_;
-  numBlasCols_ = that.numBlasCols_;
-  myBlasRow_ = that.myBlasRow_;
-  myBlasCol_ = that.myBlasCol_;
+  numBlacsRows_ = that.numBlacsRows_;
+  numBlacsCols_ = that.numBlacsCols_;
+  myBlacsRow_ = that.myBlacsRow_;
+  myBlacsCol_ = that.myBlacsCol_;
   blasRank_ = that.blasRank_;
   blacsContext_ = that.blacsContext_;
 
@@ -385,10 +359,10 @@ ParallelMatrix<T>& ParallelMatrix<T>::operator=(const ParallelMatrix<T>& that) {
     numBlocksCols_ = that.numBlocksCols_;
     blockSizeRows_ = that.blockSizeRows_;
     blockSizeCols_ = that.blockSizeCols_;
-    numBlasRows_ = that.numBlasRows_;
-    numBlasCols_ = that.numBlasCols_;
-    myBlasRow_ = that.myBlasRow_;
-    myBlasCol_ = that.myBlasCol_;
+    numBlacsRows_ = that.numBlacsRows_;
+    numBlacsCols_ = that.numBlacsCols_;
+    myBlacsRow_ = that.myBlacsRow_;
+    myBlacsCol_ = that.myBlacsCol_;
     blasRank_ = that.blasRank_;
     blacsContext_ = that.blacsContext_;
 
@@ -417,14 +391,14 @@ ParallelMatrix<T>::~ParallelMatrix() {
 }
 
 template <typename T>
-void ParallelMatrix<T>::initBlacs(const int& numBlasRows, const int& numBlasCols,
+void ParallelMatrix<T>::initBlacs(const int& numBlacsRows, const int& numBlacsCols,
                                                         const int& inputBlacsContext) {
 
   int size = mpi->getSize(); // temp variable for mpi world size, used in setup
 
   // TODO if we only give this the nearest square number of processors,
   // will it disregard the others for us? Could this fix the
-  // sq process thing?
+  // sq process requirement and just leave some idling?
   //       NPROW = INT(SQRT(REAL(NNODES)))
   //    NPCOL = NNODES/NPROW
   //  IF (MYROW .LT. NPROW .AND. MYCOL .LT. NPCOL) THEN
@@ -436,49 +410,46 @@ void ParallelMatrix<T>::initBlacs(const int& numBlasRows, const int& numBlasCols
   }
 
   // kill the code if we asked for more blas rows/cols than there are procs
-  if (mpi->getSize() < numBlasRows * numBlasCols) {
+  if (mpi->getSize() < numBlacsRows * numBlacsCols) {
      Error("Developer error: initBlacs requested too many MPI processes.");
   }
 
   // Cases for a blacs grid where we specified rows, cols, both,
   // or the default, neither, which results in a square proc grid
-  if(numBlasRows != 0 && numBlasCols == 0) {
-    numBlasRows_ = numBlasRows;
-    numBlasCols_ = mpi->getSize()/numBlasRows;
+  if(numBlacsRows != 0 && numBlacsCols == 0) {
+    numBlacsRows_ = numBlacsRows;
+    numBlacsCols_ = mpi->getSize()/numBlacsRows;
   }
-  else if(numBlasRows == 0 && numBlasCols != 0) {
-    numBlasRows_ = mpi->getSize()/numBlasCols;
-    numBlasCols_ = numBlasCols;
+  else if(numBlacsRows == 0 && numBlacsCols != 0) {
+    numBlacsRows_ = mpi->getSize()/numBlacsCols;
+    numBlacsCols_ = numBlacsCols;
   }
-  else if(numBlasRows !=0 && numBlasCols !=0 ) {
-    numBlasRows_ = numBlasRows;
-    numBlasCols_ = numBlasCols;
+  else if(numBlacsRows !=0 && numBlacsCols !=0 ) {
+    numBlacsRows_ = numBlacsRows;
+    numBlacsCols_ = numBlacsCols;
   }
   else {
     // set up a square procs grid, as the default
-    numBlasRows_ = (int)(sqrt(size)); // int does rounding down (intentional!)
-    numBlasCols_ = numBlasRows_;
+    numBlacsRows_ = (int)(sqrt(size)); // int does rounding down (intentional!)
+    numBlacsCols_ = numBlacsRows_;
 
-    // TODO will this just work ( not using all procs for matrix )
-    // if we remove this error???
-    //
     // Throw an error if we tried to set up a square proc grid with
     // a non-square number of processors
-    if (mpi->getSize() > numBlasRows_ * numBlasCols_) {
-      Error("Phoebe needs a square number of MPI processes");
+    if (mpi->getSize() > numBlacsRows_ * numBlacsCols_) {
+      Error("Most ScaLAPACK calls need a square number of MPI processes");
     }
   }
 
   // if no context is given, create one.
   // Otherwise, use the one supplied
   if( inputBlacsContext == -1) { // no context has been created/supplied
-    blacs_gridinit_(&blacsContext_, &blacsLayout_, &numBlasRows_, &numBlasCols_);
+    blacs_gridinit_(&blacsContext_, &blacsLayout_, &numBlacsRows_, &numBlacsCols_);
   } else {
     blacsContext_ = inputBlacsContext;
   }
   // Create the Blacs context
   // Context -> Context grid info (# procs row/col, current procs row/col)
-  blacs_gridinfo_(&blacsContext_, &numBlasRows_, &numBlasCols_, &myBlasRow_,&myBlasCol_);
+  blacs_gridinfo_(&blacsContext_, &numBlacsRows_, &numBlacsCols_, &myBlacsRow_,&myBlacsCol_);
 }
 
 template <typename T>
@@ -545,8 +516,8 @@ std::tuple<int,int> ParallelMatrix<T>::local2Global(const int& i, const int& j) 
   int il = (int)i;
   int jl = (int)j;
   int iZero = 0;
-  int ig = indxl2g_( &il, &blockSizeRows_, &myBlasRow_, &iZero, &numBlasRows_ );
-  int jg = indxl2g_( &jl, &blockSizeCols_, &myBlasCol_, &iZero, &numBlasCols_ );
+  int ig = indxl2g_( &il, &blockSizeRows_, &myBlacsRow_, &iZero, &numBlacsRows_ );
+  int jg = indxl2g_( &jl, &blockSizeCols_, &myBlacsCol_, &iZero, &numBlacsCols_ );
   return std::make_tuple(ig,jg);
 }
 
@@ -563,8 +534,8 @@ std::tuple<int, int> ParallelMatrix<T>::local2Global(const int& k) const {
   // however, we should be careful to think that the above two conversions to i,j
   // are safe for a rectangular matrix.
 
-  //int ig = indxl2g_( &il, &blockSizeRows_, &myBlasRow_, 0, &numBlasRows_ );
-  //int jg = indxl2g_( &jl, &blockSizeCols_, &myBlasCol_, 0, &numBlasCols_ );
+  //int ig = indxl2g_( &il, &blockSizeRows_, &myBlacsRow_, 0, &numBlacsRows_ );
+  //int jg = indxl2g_( &jl, &blockSizeCols_, &myBlacsCol_, 0, &numBlacsCols_ );
   //return std::make_tuple(ig,jg);
 
   // now we can convert local row/col indices into global indices
@@ -572,12 +543,12 @@ std::tuple<int, int> ParallelMatrix<T>::local2Global(const int& k) const {
   int l_i = i / blockSizeRows_;  // which block
   int x_i = i % blockSizeRows_;  // where within that block
   // global row
-  int I = (l_i * numBlasRows_ + myBlasRow_) * blockSizeRows_ + x_i;
+  int I = (l_i * numBlacsRows_ + myBlacsRow_) * blockSizeRows_ + x_i;
 
   int l_j = j / blockSizeCols_;  // which block
   int x_j = j % blockSizeCols_;  // where within that block
   // global col
-  int J = (l_j * numBlasCols_ + myBlasCol_) * blockSizeCols_ + x_j;
+  int J = (l_j * numBlacsCols_ + myBlacsCol_) * blockSizeCols_ + x_j;
   return std::make_tuple(I, J);
 }
 
@@ -590,17 +561,17 @@ int ParallelMatrix<T>::global2Local(const int& row, const int& col) const {
 
   // use infog2l_ to check that the current process owns this matrix element
   int iia, jja, iarow, iacol;
-  infog2l_(&row_, &col_, &descMat_[0], &numBlasRows_, &numBlasCols_,
-           &myBlasRow_, &myBlasCol_, &iia, &jja, &iarow, &iacol);
+  infog2l_(&row_, &col_, &descMat_[0], &numBlacsRows_, &numBlacsCols_,
+           &myBlacsRow_, &myBlacsCol_, &iia, &jja, &iarow, &iacol);
 
   // return -1 to signify the element is not local to this process
-  if (myBlasRow_ != iarow || myBlasCol_ != iacol) {
+  if (myBlacsRow_ != iarow || myBlacsCol_ != iacol) {
     return -1;
   } else {
     // get the local indices, (il,jl) of the globally indexed element
     int iZero = 0;
-    int il = indxg2l_( &row_, &blockSizeRows_, &myBlasRow_, &iZero, &numBlasRows_ );
-    int jl = indxg2l_( &col_, &blockSizeCols_, &myBlasCol_, &iZero, &numBlasCols_ );
+    int il = indxg2l_( &row_, &blockSizeRows_, &myBlacsRow_, &iZero, &numBlacsRows_ );
+    int jl = indxg2l_( &col_, &blockSizeCols_, &myBlacsCol_, &iZero, &numBlacsCols_ );
     return il + (jl - 1) * descMat_[8] - 1;
   }
 }
@@ -609,7 +580,7 @@ template <typename T>
 std::vector<std::tuple<int, int>> ParallelMatrix<T>::getAllLocalElements() {
   std::vector<std::tuple<int, int>> x;
   for (size_t k = 0; k < numLocalElements_; k++) {
-    std::tuple<int, int> t = local2Global(k);  // bloch indices
+    std::tuple<int, int> t = local2Global(k);
     x.push_back(t);
   }
   return x;
@@ -620,7 +591,7 @@ std::vector<int> ParallelMatrix<T>::getAllLocalRows() {
   int iZero = 0;
   std::vector<int> x;
   for (int k = 0; k < numLocalRows_; k++) {
-    int gr = indxl2g_( &k, &blockSizeRows_, &myBlasRow_, &iZero, &numBlasRows_ );
+    int gr = indxl2g_( &k, &blockSizeRows_, &myBlacsRow_, &iZero, &numBlacsRows_ );
     x.push_back(gr);
   }
   return x;
@@ -631,7 +602,7 @@ std::vector<int> ParallelMatrix<T>::getAllLocalCols() {
   std::vector<int> x;
   int iZero = 0;
   for (int k = 0; k < numLocalCols_; k++) {
-    int gc = indxl2g_( &k, &blockSizeCols_, &myBlasCol_, &iZero, &numBlasCols_ );
+    int gc = indxl2g_( &k, &blockSizeCols_, &myBlacsCol_, &iZero, &numBlacsCols_ );
     x.push_back(gc);
   }
   return x;
@@ -726,146 +697,5 @@ ParallelMatrix<T> ParallelMatrix<T>::operator-() const {
 template <typename T>
 void ParallelMatrix<T>::setBlacsContext(int blacsContext) {
   blacsContext_ = blacsContext;
-}
-
-template <typename T>
-void ParallelMatrix<T>::outputToHDF5(const std::string &outFileName,
-                                   const std::string &dataSetName) {
-
-  // output the matrix elements owned by this process to file.
-  // The only tricky part here is that we need to sort them
-  // Appropriately in the file without all reducing. This is nearly
-  // impossible to do efficiently because of how HighFive is written,
-  // wherein it expects chunks of data -- which we cannot expect to have
-  // in a block-cyclic distribution of the matrix. Therefore, we do something
-  // terrible and we write single elements at a time.
-
-  #ifndef HDF5_AVAIL
-    Error("Need Phoebe compiled with parallel HDF5 to write parallel matrix to file.");
-  #elif HDF5_SERIAL
-    Error("Need Phoebe compiled with parallel HDF5 to write parallel matrix to file.");
-  #else
-
-   try {
-
-      // Create the file to write to, first removing if it exists already
-      std::remove(&outFileName[0]);
-      HighFive::FileAccessProps fapl;
-      fapl.add(HighFive::MPIOFileAccess(mpi->getComm(), MPI_INFO_NULL));
-      HighFive::File file(outFileName, HighFive::File::Overwrite, fapl);
-      
-      // setup the dataset
-      unsigned int globalSize = size();
-
-      // Create the data-space to write the elements to
-      std::vector<size_t> dims(2);
-      dims[0] = 1;
-      dims[1] = size_t(globalSize);
-      HighFive::DataSet dsMatrix= file.createDataSet<double>(
-                dataSetName, HighFive::DataSpace(dims));
-
-      LoopPrint loopPrint("writing the " + dataSetName + " to HDF5",
-             "matrix elements", getAllLocalStates().size());
-
-      // now we loop over the matrix elements and write them to file
-      for(auto matEl : getAllLocalStates()) {
-
-        loopPrint.update();
-
-        // get matrix row and col indices
-        size_t iMat1 = std::get<0>(matEl);
-        size_t iMat2 = std::get<1>(matEl);
-        // convert to 1d index, used on the underlying dataset
-        size_t iGlobal = iMat1*cols() + iMat2;
-        // get the actual value of the matrix element
-        double value = this->operator()(iMat1,iMat2);
-
-        // write the single element to the dataset
-        // here, the offset is the global index, and the count is of course 1
-        dsMatrix.select({0, iGlobal}, {1, 1}).write(value);
-      }
-
-      loopPrint.close();
-
-      // ensure everything has been written
-      file.flush();
-
-    } catch (std::exception &error) {
-      // catch and print any HDF5 error
-      std::cerr << error.what() << std::endl;
-      Error("An HDF5 error occurred while trying to write a distributed matrix to HDF5.");
-    }
-  #endif
-}
-
-
-/* generic function to enforce positive semi def */
-
-template <typename T>
-void ParallelMatrix<T>::enforcePositiveSemiDefinite() { 
-
-  if(rows() != cols()) {
-    DeveloperError("Can only enforce PSD on a square matrix."); 
-  }
-
-  // first, we need to grab the inverse sqrt of the diagonal of the matrix
-  // we could do this by passing in the diagonal, which in the case of 
-  // the scattering matrix is already stored in the linewidths vector
-  std::vector<T> invSqrtDiagonal(numRows_); 
-  std::vector<T> diagonal(numRows_); 
-  for(auto matEl : getAllLocalElements()) {
-
-    // get matrix row and col indices
-    size_t iMat1 = std::get<0>(matEl);
-    size_t iMat2 = std::get<1>(matEl);   
-    if(iMat1 != iMat2) continue; 
-
-    if(this->operator()(iMat1,iMat2) <= 1.e-16) continue; // avoid divide 1/~0
-    invSqrtDiagonal[iMat1] = sqrt(1./this->operator()(iMat1,iMat2));
-    diagonal[iMat1] = this->operator()(iMat1,iMat2);
-
-  }
-
-  // Now we make a container for a new matrix, G, with the same size as this one
-  ParallelMatrix<T> G(numRows_, numCols_, 0, 0,
-                              numBlocksRows_, numBlocksCols_, blacsContext_);
-
-  // we construct G by performing D^-1/2 * C * D^-1/2 (where D are matrices)
-  // with the diagonal elements set to sqrt(diagonal) of this matrix
-  for(auto matEl : getAllLocalElements()) {
-
-    // get matrix row and col indices
-    size_t iMat1 = std::get<0>(matEl);
-    size_t iMat2 = std::get<1>(matEl);   
-
-    G(iMat1,iMat2) = invSqrtDiagonal[iMat1] * this->operator()(iMat1,iMat2) * invSqrtDiagonal[iMat2];
-
-  }
-
-  // Diagonalize G and store it's most negative eigenvalue 
-  auto diagResult = G.diagonalize(); 
-  T lowestEigenvalue = std::get<0>(diagResult)[0]; // zeroth element is the most negative
-
-  if(lowestEigenvalue >= 0) return; // all eigenvalues are positive, no need to correct 
-
-  if(mpi->mpiHead()) {
-    std::cout << "Correcting scattering matrix for loweset eigenvalue " 
-    << lowestEigenvalue << std::endl;
-  }
-
-  // we need the abs of this below, no sense in repeating it in the loop
-  lowestEigenvalue = abs(lowestEigenvalue); // unsure if this would work on a complex matrix 
-
-  // finally use this result to correct the real matrix 
-  for(auto matEl : getAllLocalElements()) {
-
-    // get matrix row and col indices
-    size_t iMat1 = std::get<0>(matEl);
-    size_t iMat2 = std::get<1>(matEl);  
-    if(iMat1 != iMat2) continue; // we only fix the diagonal 
-
-    this->operator()(iMat1,iMat2) = this->operator()(iMat1,iMat2) + 1.05*lowestEigenvalue * diagonal[iMat1]; 
-
-  }
 }
 
