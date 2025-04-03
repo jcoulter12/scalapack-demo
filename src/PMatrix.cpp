@@ -148,20 +148,10 @@ ParallelMatrix<double>::diagonalize() {
     Error("PDSYEVD lwork array allocation failed.");
   }
 
-/*   if(mpi->mpiHead()) {
-     std::cout << "Starting matrix diagonalization." << std::endl;
-     mpi->time();
-  }
- */
   // call the function to now diagonalize
   pdsyevd_(&jobz, &uplo, &numRows_, mat, &ia, &ja, &descMat_[0], eigenvalues,
           eigenvectors.mat, &ia, &ja, &eigenvectors.descMat_[0],
           work, &lwork, iwork, &liwork, &info);
-
-/*   if(mpi->mpiHead()) {
-     std::cout << "Matrix diagonalization completed." << std::endl;
-     mpi->time();
-  } */
 
   if(info != 0) {
     if (mpi->mpiHead()) {
